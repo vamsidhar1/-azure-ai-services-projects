@@ -1,4 +1,4 @@
-pip install azure-ai-formrecognizer openai azure-search-documents
+#pip install azure-ai-formrecognizer openai azure-search-documents
 import openai
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.formrecognizer import DocumentAnalysisClient
