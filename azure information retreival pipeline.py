@@ -126,3 +126,38 @@ results = hybrid_search(query)
 # 6️⃣ Display Results
 for result in results:
     print(f"🔹 Matched Content: {result['content']}\n")
+
+#Augment Search Results with LLM Explanation
+
+
+from openai import ChatCompletion
+
+def augment_search_results(query, search_results):
+    # Combine search results into a context for LLM
+    context = "\n\n".join([f"Article: {doc['content']}" for doc in search_results])
+
+    # Prompt for the LLM
+    prompt = f"""
+    You are a legal expert. Based on the following legal text, provide a concise and clear explanation for the query: "{query}"
+
+    Legal Documents:
+    {context}
+
+    Explanation:
+    """
+
+    # Call the LLM (e.g., GPT-4)
+    response = ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "system", "content": "You are an expert in constitutional law."},
+                  {"role": "user", "content": prompt}]
+    )
+
+    return response["choices"][0]["message"]["content"]
+
+# Example Usage
+query = "How are new states formed in India?"
+search_results = hybrid_search(query)  # Retrieve AI Search results
+llm_response = augment_search_results(query, search_results)
+
+print("🔹 LLM Augmented Answer:\n", llm_response)
