@@ -1,1 +1,1 @@
-# -azure-ai-services-projects
+# azure-ai-services-projects
