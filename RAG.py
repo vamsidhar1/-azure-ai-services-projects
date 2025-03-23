@@ -19,6 +19,7 @@ def load_pdf(pdf_path):
 
 # Step 2: Chunk the Document
 nltk.download('punkt')
+nltk.download('punkt_tab')
 def chunk_document(text):
     sentences = sent_tokenize(text)
     return sentences
