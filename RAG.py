@@ -1,7 +1,6 @@
 import fitz  # PyMuPDF
 import nltk
 from nltk.tokenize import sent_tokenize
-from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
 import openai
@@ -24,10 +23,15 @@ def chunk_document(text):
     sentences = sent_tokenize(text)
     return sentences
 
-# Step 3: Create Embeddings
-model = SentenceTransformer('all-mpnet-base-v2')
+# Step 3: Create Embeddings using OpenAI's text-embedding-ada-002
 def create_embeddings(chunks):
-    embeddings = model.encode(chunks)
+    embeddings = []
+    for chunk in chunks:
+        response = openai.Embedding.create(
+            model="text-embedding-ada-002",  # Use OpenAI's ADA embedding model
+            input=chunk
+        )
+        embeddings.append(response['data'][0]['embedding'])
     return embeddings
 
 # Step 4: Create FAISS Index
@@ -37,14 +41,18 @@ def create_faiss_index(embeddings):
     index.add(embeddings_np)
     return index
 
-# Step 5: User Query and Embedding Generation
+# Step 5: User Query and Embedding Generation using OpenAI
 def query_to_embedding(query):
-    query_embedding = model.encode([query])
-    return query_embedding
+    response = openai.Embedding.create(
+        model="text-embedding-ada-002",  # Use OpenAI's ADA embedding model
+        input=query
+    )
+    query_embedding = response['data'][0]['embedding']
+    return np.array(query_embedding).astype('float32')
 
 # Step 6: Search Similar Embedding
 def search_similar_embeddings(query_embedding, index, k=3):
-    distances, indices = index.search(query_embedding.astype('float32'), k)
+    distances, indices = index.search(query_embedding, k)
     return distances, indices
 
 # Step 7: Retrieve Relevant Chunks
