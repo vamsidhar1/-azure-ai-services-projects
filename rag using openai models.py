@@ -1,91 +1,76 @@
+from fastapi import FastAPI, Query
 import fitz  # PyMuPDF
-import nltk
-from nltk.tokenize import sent_tokenize
 import faiss
 import numpy as np
 import openai
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-# OpenAI API key (replace with your actual key)
-openai.api_key = 'your-openai-api-key'
+app = FastAPI()
 
-# Step 1: Load PDF and Extract Text
-def load_pdf(pdf_path):
+OPENAI_API_KEY = "your-api-key"
+
+# Function to extract text from PDF
+def extract_text_from_pdf(pdf_path):
     doc = fitz.open(pdf_path)
     text = ""
     for page in doc:
-        text += page.get_text("text")
+        text += page.get_text("text") + "\n"
     return text
 
-# Step 2: Chunk the Document
-nltk.download('punkt')
-nltk.download('punkt_tab')
-def chunk_document(text):
-    sentences = sent_tokenize(text)
-    return sentences
+# Function to split text into chunks
+def split_text(text):
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    return text_splitter.split_text(text)
 
-# Step 3: Create Embeddings using OpenAI's text-embedding-ada-002
-def create_embeddings(chunks):
-    embeddings = []
-    for chunk in chunks:
-        response = openai.Embedding.create(
-            model="text-embedding-ada-002",  # Use OpenAI's ADA embedding model
-            input=chunk
-        )
-        embeddings.append(response['data'][0]['embedding'])
-    return embeddings
+# Function to get OpenAI embeddings
+def get_embedding(text):
+    response = openai.Embedding.create(
+        input=text,
+        model="text-embedding-ada-002"
+    )
+    return response["data"][0]["embedding"]
 
-# Step 4: Create FAISS Index
-def create_faiss_index(embeddings):
-    embeddings_np = np.array(embeddings).astype('float32')
-    index = faiss.IndexFlatL2(embeddings_np.shape[1])
-    index.add(embeddings_np)
+# Function to create and save FAISS index
+def create_faiss_index(chunks):
+    embeddings = np.array([get_embedding(chunk) for chunk in chunks], dtype=np.float32)
+    dimension = embeddings.shape[1]  # Get embedding dimension
+    index = faiss.IndexFlatL2(dimension)
+    index.add(embeddings)
+    faiss.write_index(index, "faiss_index")
     return index
 
-# Step 5: User Query and Embedding Generation using OpenAI
-def query_to_embedding(query):
-    response = openai.Embedding.create(
-        model="text-embedding-ada-002",  # Use OpenAI's ADA embedding model
-        input=query
-    )
-    query_embedding = response['data'][0]['embedding']
-    return np.array(query_embedding).astype('float32')
+# Load or create FAISS index
+try:
+    index = faiss.read_index("faiss_index")
+except:
+    print("No FAISS index found, creating a new one...")
+    text = extract_text_from_pdf("example.pdf")  # Load your PDF
+    chunks = split_text(text)
+    index = create_faiss_index(chunks)
 
-# Step 6: Search Similar Embedding
-def search_similar_embeddings(query_embedding, index, k=3):
+# Function to search FAISS index
+def search_faiss(query, k=3):
+    query_embedding = np.array([get_embedding(query)], dtype=np.float32)
     distances, indices = index.search(query_embedding, k)
-    return distances, indices
+    return indices[0]  # Returns top-k matching chunk indices
 
-# Step 7: Retrieve Relevant Chunks
-def retrieve_chunks(indices, chunks):
-    return [chunks[i] for i in indices[0]]
-
-# Step 8: Generate LLM Response
-def generate_llm_response(prompt):
-    response = openai.Completion.create(
+# Function to query OpenAI GPT-4 with retrieved context
+def ask_gpt4(question, context):
+    response = openai.ChatCompletion.create(
         model="gpt-4",
-        prompt=prompt,
-        max_tokens=200,
-        temperature=0.7
+        messages=[
+            {"role": "system", "content": "You are an AI assistant that answers questions based on given context."},
+            {"role": "user", "content": f"Context: {context}\n\nQuestion: {question}"}
+        ]
     )
-    return response['choices'][0]['text'].strip()
+    return response["choices"][0]["message"]["content"]
 
-# Example Usage
-pdf_text = load_pdf("sample_document.pdf")
-chunks = chunk_document(pdf_text)
-embeddings = create_embeddings(chunks)
-index = create_faiss_index(embeddings)
+# FastAPI endpoint for querying the chatbot
+@app.post("/ask")
+async def ask_chatbot(query: str = Query(..., description="User's question")):
+    top_chunks = search_faiss(query)
+    context = " ".join([chunks[i] for i in top_chunks])
+    answer = ask_gpt4(query, context)
+    return {"question": query, "answer": answer}
 
-user_query = "What is the impact of climate change on agriculture?"
-query_embedding = query_to_embedding(user_query)
-
-distances, indices = search_similar_embeddings(query_embedding, index, k=3)
-relevant_chunks = retrieve_chunks(indices, chunks)
-
-# Format the prompt for the LLM
-prompt = f"User Query: {user_query}\n\nRelevant Information:\n"
-for idx, chunk in enumerate(relevant_chunks, 1):
-    prompt += f"Chunk {idx}: {chunk}\n"
-
-# Get LLM response
-llm_response = generate_llm_response(prompt)
-print("Final Response from LLM:", llm_response)
+# Run the API with: uvicorn filename:app --host 0.0.0.0 --port 8000
