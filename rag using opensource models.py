@@ -1,24 +1,12 @@
 import fitz  # PyMuPDF for PDF text extraction
 import faiss
 import numpy as np
-from fastapi import FastAPI, UploadFile, File
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
-import uvicorn
 import os
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+import openai
 
-# Initialize FastAPI
-app = FastAPI()
-
-# Load Open-Source Embedding Model
-embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-
-# Load Open-Source LLM (Mistral-7B)
-model_name = "mistralai/Mistral-7B-Instruct"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-llm_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+# Set your OpenAI API key
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # Global Variables
 chunks = []
@@ -35,9 +23,16 @@ def chunk_text(text):
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     return splitter.split_text(text)
 
-def embed_text(chunks):
-    """ Generates embeddings for text chunks using SentenceTransformers. """
-    return embedding_model.encode(chunks, convert_to_numpy=True)
+def embed_text_openai(text_chunks):
+    """ Uses OpenAI to embed text chunks. """
+    embeddings = []
+    for chunk in text_chunks:
+        response = openai.Embedding.create(
+            input=chunk,
+            model="text-embedding-3-small"
+        )
+        embeddings.append(response["data"][0]["embedding"])
+    return np.array(embeddings).astype("float32")
 
 def build_faiss_index(embeddings):
     """ Creates a FAISS index for efficient retrieval. """
@@ -47,48 +42,55 @@ def build_faiss_index(embeddings):
 
 def search_faiss(query, top_k=3):
     """ Searches FAISS for the most relevant chunks. """
-    query_embedding = embedding_model.encode([query], convert_to_numpy=True)
-    distances, indices = index.search(query_embedding, top_k)
+    query_embedding = openai.Embedding.create(
+        input=query,
+        model="text-embedding-3-small"
+    )["data"][0]["embedding"]
+    
+    query_vector = np.array([query_embedding], dtype="float32")
+    distances, indices = index.search(query_vector, top_k)
     return [chunks[i] for i in indices[0]]
 
-def ask_mistral(question, context):
-    """ Uses Mistral-7B to generate an answer based on retrieved context. """
+def ask_openai(question, context):
+    """ Uses OpenAI GPT-4 to generate an answer based on context. """
     prompt = f"Context: {context}\n\nQuestion: {question}"
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
-    inputs = {key: val.to(llm_model.device) for key, val in inputs.items()}
-    output = llm_model.generate(**inputs, max_new_tokens=200)
-    return tokenizer.decode(output[0], skip_special_tokens=True)
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=300
+    )
+    return response["choices"][0]["message"]["content"]
 
-@app.post("/upload-pdf/")
-async def upload_pdf(file: UploadFile = File(...)):
-    """ API to upload a PDF, extract text, and build FAISS index. """
+def process_pdf_and_index(file_path):
+    """ Processes PDF and builds FAISS index. """
     global chunks, index
-
-    # Save uploaded file
-    file_path = f"temp_{file.filename}"
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
-
-    # Process PDF
     text = extract_text_from_pdf(file_path)
     chunks = chunk_text(text)
-    embeddings = embed_text(chunks)
+    embeddings = embed_text_openai(chunks)
     index = build_faiss_index(embeddings)
+    print(f"Processed {len(chunks)} chunks from PDF.")
 
-    os.remove(file_path)  # Cleanup temp file
-    return {"message": "PDF processed and indexed successfully!", "total_chunks": len(chunks)}
-
-@app.get("/ask/")
-async def ask(query: str):
-    """ API to get an answer based on a user query. """
+def run_query(query):
+    """ Runs a query against the indexed data. """
     if not chunks or index is None:
-        return {"error": "No document has been uploaded yet!"}
-
+        return "No document has been processed yet!"
+    
     top_chunks = search_faiss(query)
     context = " ".join(top_chunks)
-    answer = ask_mistral(query, context)
+    answer = ask_openai(query, context)
+    return answer
 
-    return {"query": query, "answer": answer}
-
+# Example usage
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    pdf_path = "example.pdf"  # Replace with your actual PDF file path
+    process_pdf_and_index(pdf_path)
+    
+    while True:
+        user_query = input("\nAsk a question (or type 'exit'): ")
+        if user_query.lower() == "exit":
+            break
+        response = run_query(user_query)
+        print(f"\nAnswer: {response}")
